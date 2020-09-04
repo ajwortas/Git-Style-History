@@ -4,14 +4,17 @@ repo=$1
 dest=$2
 
 cd "${repo}"
+mkdir temp
+initialRepo=$repo
+repo="${repo}/temp"
 
 hashList="$(git log --all --no-merges --pretty=format:'%H')"
 
 let count=0
 for githash in $hashList
 do
-    git checkout $githash
-    filesChanged="$(git show --pretty="" --name-only)"
+#    git checkout $githash
+    filesChanged="$(git show --pretty="" --name-only $githash)"
 #    subject="$(git log --pretty=format:'%s')"
 
     cd "$dest"
@@ -31,10 +34,15 @@ do
     do
         if [[ $file == *".java"* ]]
         then 
-            cp "$file" "${copyDest}"
+           fileName="$(echo $file | sed 's!.*/!!')"
+           git show "${githash}:${file}">$fileName
+           mv $fileName $copyDest
         fi         
     done
     let count++
 done
+
+cd $initialRepo
+rmdir temp
 
 echo "done"
