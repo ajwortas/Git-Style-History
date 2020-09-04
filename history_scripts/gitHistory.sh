@@ -2,38 +2,16 @@
 
 repo=$1
 dest=$2
-newest_to_oldest=$3
-hide_non_java_from_change_list=$4
-skip_ignored_file_commits=$5
-include_non_java_files=$6
+release_hashes=$3
+newest_to_oldest=$4 #not implemented
+hide_non_java_from_change_list=$5
+skip_ignored_file_commits=$6
+include_non_java_files=$7
 
 cd $repo
 
 #Finds creates a list of all the hashes then finds the oldest and newest hashes
-hashList=''
-oldest=''
-newest=''
-if [ $newest_to_oldest -eq 1 ]
-then
-    hashList="$(git log --all --no-merges --pretty=format:'%H')"
-    newest="$(echo $hashList | sed 's/ .*//')"
-    oldest="$(echo $hashList | sed 's/.* //g')"
-else
-    hashList="$(git log --all --reverse --no-merges --pretty=format:'%H')"
-    oldest="$(echo $hashList | sed 's/ .*//')"
-    newest="$(echo $hashList | sed 's/.* //g')"
-fi
-
-#checks out the master and oldest branch to add to general folder
-git checkout $oldest
-cd $dest 
-mkdir "Oldest-$oldest"
-mkdir "Newest-$newest"
-cp -r "$repo/." "Oldest-$oldest"
-
-cd $repo
-git checkout master
-cp -r "$repo/." "$dest/Newest-$newest"
+hashList="$(<$release_hashes)"
 
 #creates a history folder to store the commit histories
 cd $dest
@@ -49,11 +27,19 @@ initialRepo=$repo
 repo="${repo}/${tempName}"
 
 let count=0
+prevHash=''
 for githash in $hashList
 do
+    if [ $count -eq 0 ]
+    then
+        prevHash=$githash
+        let count++
+        continue
+    fi
+
     #returns to the repo to collect the needed git data
     cd $repo
-    filesChanged="$(git show --pretty="" --name-only $githash)"
+    filesChanged="$(git diff --name-only $prevHash $githash)"
 
     #allows for the option to ignore commits not containing java files
     if [ $skip_ignored_file_commits -eq 1 ] && [[ $filesChanged != *".java"* ]]
@@ -61,10 +47,6 @@ do
         continue
     fi
    
-    #gets additional data not needed to determine skipping this commit
-    hashData=`git log -1 --pretty="\"Hash\":\"%H\",%n\"Tree_hash\":\"%T\",%n\"Parent_hashes\":\"%P\",%n\"Author_name\":\"%an\",%n\"Author_date\":\"%ad\",%n\"Committer_name\":\"%cn\",%n\"Committer_date\":\"%cd\",%n\"Subject\":\"%s\",%n\"Commit_Message\":\"%B\",%n\"Commit_notes\":\"%N\"," $githash`
-    hashChanges="$(git log -1 --shortstat --pretty="" $githash)"
-    
     #creates a commit's directory
     cd $dest
     newDir="${count}-${githash}"
@@ -85,45 +67,10 @@ do
     else
         fileOutput="$(echo $filesChanged | sed 's/ /:/g')"
     fi
-    #parsing stat data
-    incertions=''
-    if [[ $hashChanges == *"(+)"* ]]
-	then
-        incertions="$(echo $hashChanges | grep -o -P '(?<=changed, ).*(?=insertion)')"
-    else
-        incertions='0'
-    fi
-    deletions=''
-    if [[ $hashChanges == *"(-)"* ]]
-	then
-		if [[ $hashChanges == *"(+)"* ]]
-		then
-			deletions="$(echo $hashChanges | sed 's/(+), /add/' |
-				grep -o -P '(?<=add).*(?=deletion)')"
-		else
-			deletions="$(echo $hashChanges | sed 's/changed, /add/' |
-				grep -o -P '(?<=add).*(?=deletion)')"
-		fi
-	else
-		deletions="0"
-	fi
+
     {
         echo $fileOutput
     }>"${newDir}_filesChanged.txt"
-    {
-        echo "Files_Changed,$(echo $hashChanges | sed 's/file.*//g')" | tr -d ' '
-        echo "Incertions,$incertions"| tr -d ' '
-        echo "Deletions,$deletions"| tr -d ' '
-    }>"${newDir}_fileChangeDetails.csv"
-    {
-        echo '{'
-        echo $hashData
-        echo "\"Number_of_files_changed\":$(echo $hashChanges | sed 's/file.*//g')," | tr -d ' '
-        echo "\"Incertions\":$incertions," | tr -d ' '
-        echo "\"Deletions\":$deletions,"| tr -d ' '
-        echo "\"Files_Changed\":\"$fileOutput\""
-        echo '}'
-    }>"${newDir}_gitCommitData.json"
     
     for file in $filesChanged
     do
@@ -165,6 +112,7 @@ do
         mv "$repo/$fileName" ./       
     done
     let count++
+    prevHash=$githash
 done
 
 #clean up of temp folder
