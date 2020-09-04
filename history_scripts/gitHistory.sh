@@ -20,10 +20,10 @@ do
     #returns to the repo to collect the needed git data
     cd $repo
     filesChanged="$(git show --pretty="" --name-only $githash)"
-    hashData=`git log -1 --pretty="Hash:%H|Tree hash:%T|Parent hashes:%P|Author name:%an|Author date:%ad|Committer name:%cn|Committer date:%cd|Subject:%s|Commit Message:%B|Commit notes:%N" $githash |
+    hashData=`git log -1 --pretty="Hash:%H|Author name:%an|Author date:%ad|Committer name:%cn|Committer date:%cd|Parent hashes:%P|Commit Message:%B" $githash |
        sed 's/\n/ /g'`
     hashChanges="$(git log -1 --shortstat --pretty="" $githash)"
-    
+    parent="$(git log -1 --pretty="%P" $githash)"
     #creates a commit's directory
     cd $dest
     newDir="${count}-${githash}"
@@ -35,11 +35,14 @@ do
     gitData="collectedGitData"
     mkdir $gitData
     cd $gitData
+    storedDiffs="diffs"
+    mkdir $storedDiffs
 
     #stores git data as txt files
     {
         echo $filesChanged | sed 's/ /:/g'
-    }>filesChanged.txt   
+    }>filesChanged.txt    
+    
     {
         echo $hashData|sed 's/|/\n/g'
         
@@ -82,7 +85,17 @@ do
             #return to temp folder to make the file
             cd $repo
             git show "${githash}:${file}">$fileName
-        
+
+            diffFileName="$(echo $file | sed 's!/!-!g' | sed 's!java!txt!')"
+         
+            echo $parent
+            echo $githash
+            echo $file
+            git diff "$parent" "$githash" -- "$file"
+            #git diff $parent
+            #git diff $githash
+            break
+            mv $diffFileName "$copyDest/$gitData/$storedDiffs"
             #recreating the path in the commit's directory
             cd $copyDest
             tempIFS=$IFS
