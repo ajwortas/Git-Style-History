@@ -9,6 +9,7 @@ newest_to_oldest=$5 #not implemented
 hide_non_java_from_change_list=$6
 skip_ignored_file_commits=$7
 include_non_java_files=$8
+include_compared_files=$9
 
 #method for creating checkpoints
 makeCheckpoint () {
@@ -29,11 +30,54 @@ makeCheckpoint () {
     cd $currentPos
 }
 
+makeFileAndPath () {
+    currentPos=$(PWD)
+    repo=$1
+    copyDest=$2
+    githash=$3
+    holdingLoc=$4
+    file=$5
+
+    fileName=$(basename $file)
+    filePath=$(dirname $file)
+    
+    #creating the file
+    cd $repo
+    git show "${githash}:${file}">"$holdingLoc/$fileName"
+    cd $holdingLoc
+
+    #this occurs when a file was deleted in the commit
+    if [ ! -s $fileName ]
+    then
+        rm $fileName
+        return
+    fi
+
+    #recreating the path in the commit's directory
+    cd $copyDest
+    tempIFS=$IFS
+    IFS='/'
+    for directory in $filePath
+    do
+        if [ ! -d $directory ]
+        then
+            mkdir $directory
+        fi
+        cd $directory
+    done
+    IFS=$tempIFS
+
+    #finally moving the file to it's desired location
+    mv "$holdingLoc/$fileName" ./ 
+    
+    cd $currentPos
+}
+
+#gathers needed info then makes initial checkpoints
 cd $repo
 hashList="$(git log --all --reverse --no-merges --pretty=format:'%H')"
 oldest="$(echo $hashList | sed 's/ .*//')"
 newest="$(echo $hashList | sed 's/.* //g')"
-
 hashList="$(<$release_hashes)"
 
 makeCheckpoint "$repo" "$dest" "Initial" "$oldest"
@@ -53,6 +97,7 @@ tagLog[0]="Initial commit,$oldest"
 
 
 let count=0
+let cpNextMinorVersion=0;
 for githash in $hashList
 do
     #returns to the repo to collect the needed git data
@@ -67,17 +112,13 @@ do
     do
         let prevHashIndex--
     done
-    echo "Tag: $fullTag"
-    echo "Simple Tag: $simpleTag"
-    echo "Major Version: $majorVersion"
-    echo "preHashIndex: $prevHashIndex"
     compareHash=${prevHash[$prevHashIndex]}
     prevHash[$majorVersion]=$githash
 
     filesChanged="$(git diff --name-only $compareHash $githash)"
 
     #allows for the option to ignore commits not containing java files
-    if [ $skip_ignored_file_commits -eq 1 ] && [[ $filesChanged != *".java"* ]]
+    if ([ $skip_ignored_file_commits -eq 1 ] && [[ $filesChanged != *".java"* ]]) || [ $githash == $compareHash ]
     then
         continue
     fi
@@ -86,9 +127,15 @@ do
 
     #check for checkpoint criteria
     let checkForCheckpoint=$count%$checkpoint_iterations
-    if ([ $checkForCheckpoint -eq 0 ] && [ ! $checkpoint_iterations -eq 0 ]) || [ ! $majorVersion -eq $prevHashIndex ]
+    if ([ $checkForCheckpoint -eq 0 ] && [ ! $checkpoint_iterations -eq 0 ]) || [ ! $majorVersion -eq $prevHashIndex ] || [ $cpNextMinorVersion -eq 1 ]
     then
-        makeCheckpoint "$repo" "$initialDest" "$count" "$githash"
+        if [[ $simpleTag =~ .*[0-9]+\.[0-9]+\.0 ]]
+        then
+            makeCheckpoint "$repo" "$initialDest" "$count" "$githash"
+            cpNextMinorVersion=0
+        else
+            cpNextMinorVersion=1
+        fi
     fi
   
     #gets additional data not needed to determine skipping this commit
@@ -105,6 +152,13 @@ do
     #storage for files
     nonMetaData="commit_changes"
     mkdir $nonMetaData
+    prevHashCopyDest=''
+    if [ $include_compared_files -eq 1 ]
+    then
+        prevNonMetaData="prev_version_commit_changes"
+        mkdir $prevNonMetaData
+        prevHashCopyDest="$copyDest/$prevNonMetaData"
+    fi
     copyDest="$copyDest/$nonMetaData"
 
     #Data parsing and storage
@@ -168,38 +222,13 @@ do
         then
             continue
         fi
-
-        fileName=$(basename $file)
-        filePath=$(dirname $file)
-
-        #creating the file
-        cd $repo
-        git show "${githash}:${file}">"$initialDest/$fileName"
-        cd $initialDest
-
-        #this occurs when a file was deleted in the commit
-        if [ ! -s $fileName ]
+    
+        makeFileAndPath $repo $copyDest $githash $initialDest $file
+    
+        if [ $include_compared_files -eq 1 ]
         then
-            rm $fileName
-            continue
-        fi
-
-        #recreating the path in the commit's directory
-        cd $copyDest
-        tempIFS=$IFS
-        IFS='/'
-        for directory in $filePath
-        do
-            if [ ! -d $directory ]
-            then
-                mkdir $directory
-            fi
-            cd $directory
-        done
-        IFS=$tempIFS
-
-        #finally moving the file to it's desired location
-        mv "$initialDest/$fileName" ./       
+            makeFileAndPath $repo $prevHashCopyDest $prevHash $initialDest $file
+        fi  
     done
     let count++
 done
