@@ -45,34 +45,59 @@ mkdir "history"
 initialDest=$dest
 dest="$dest/history"
 
-prevHash=$oldest
+#arrays for branching
+declare -a prevHash
+prevHash[0]=$oldest
+declare -a tagLog
+tagLog[0]="Initial commit,$oldest"
+
+
 let count=0
 for githash in $hashList
 do
     #returns to the repo to collect the needed git data
     cd $repo
+    
+    #deals with the tag tree structure
+    fullTag="$(git describe --tags $githash)"
+    simpleTag="$(echo "$fullTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')"
+    let majorVersion="$(echo $simpleTag | sed 's/\..*//')"
+    let prevHashIndex=$majorVersion
+    while [ -z ${prevHash[$prevHashIndex]} ]
+    do
+        let prevHashIndex--
+    done
+    echo "Tag: $fullTag"
+    echo "Simple Tag: $simpleTag"
+    echo "Major Version: $majorVersion"
+    echo "preHashIndex: $prevHashIndex"
+    compareHash=${prevHash[$prevHashIndex]}
+    prevHash[$majorVersion]=$githash
 
-    filesChanged="$(git diff --name-only $prevHash $githash)"
+    filesChanged="$(git diff --name-only $compareHash $githash)"
+
     #allows for the option to ignore commits not containing java files
     if [ $skip_ignored_file_commits -eq 1 ] && [[ $filesChanged != *".java"* ]]
     then
         continue
     fi
    
+    tagLog[$majorVersion]="${tagLog[$prevHashIndex]}:$fullTag,$githash"
+
     #check for checkpoint criteria
     let checkForCheckpoint=$count%$checkpoint_iterations
-    if [ $checkForCheckpoint -eq 0 ] && [ ! $checkpoint_iterations -eq 0 ] 
+    if ([ $checkForCheckpoint -eq 0 ] && [ ! $checkpoint_iterations -eq 0 ]) || [ ! $majorVersion -eq $prevHashIndex ]
     then
         makeCheckpoint "$repo" "$initialDest" "$count" "$githash"
     fi
   
     #gets additional data not needed to determine skipping this commit
     hashData=`git log -1 --pretty="\"Hash\":\"%H\",%n\"Tree_hash\":\"%T\",%n\"Parent_hashes\":\"%P\",%n\"Author_name\":\"%an\",%n\"Author_date\":\"%ad\",%n\"Committer_name\":\"%cn\",%n\"Committer_date\":\"%cd\",%n\"Subject\":\"%s\",%n\"Commit_Message\":\"%B\",%n\"Commit_notes\":\"%N\"," $githash`
-    hashChanges="$(git diff --shortstat $prevHash $githash)"
+    hashChanges="$(git diff --shortstat $compareHash $githash)"
     
     #creates a commit's directory
     cd $dest
-    newDir="${count}-${githash}"
+    newDir="${count}-${simpleTag}-${githash}"
     mkdir $newDir
     copyDest="${dest}/${newDir}"
     cd $newDir
@@ -132,7 +157,10 @@ do
         echo "\"Files_Changed\":\"$fileOutput\""
         echo '}'
     }>"${newDir}_gitCommitData.json"
-    
+    {   
+        echo ${tagLog[$majorVersion]} | tr ':' '\n'
+    }>"${newDir}_tagLog.csv"
+
     for file in $filesChanged
     do
         #ignores non java files
