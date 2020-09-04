@@ -64,19 +64,19 @@ countFormating () {
     done
 }
 
-#turns a github short stat result into global variables: insertions, deletions, numFilesChanged
+#turns a github short stat result into global variables: incertions, deletions, numFilesChanged
 parseStatsData () {
     local hashChanges=$1
 
     #there are instances where there are no additions xor deletions in which case the hash changes variable
     #does not acknowledge them with a 0 instead leaving it blank. 
 
-    insertions=''
+    incertions=''
     if [[ $hashChanges == *"(+)"* ]]
 	then
-        insertions="$(echo $hashChanges | grep -o -P '(?<=changed, ).*(?=insertion)')"
+        incertions="$(echo $hashChanges | grep -o -P '(?<=changed, ).*(?=insertion)')"
     else
-        insertions='0'
+        incertions='0'
     fi
     deletions=''
     if [[ $hashChanges == *"(-)"* ]]
@@ -144,11 +144,11 @@ makeFileAndPath () {
         {
             echo $authorName
             echo $authorTime
-            echo $insertions
+            echo $incertions
             echo $deletions
             git diff $previousCommitHash..$givenHash -- $file 
         }> "$fileDiffsLocation/$diffPath/${numberAndHash}_$txtFileName"
-        fileDiffData="$fileDiffData,\"$file\":[\"$authorName\",\"$authorTime\",$insertions,$deletions,\"$diffPath/${numberAndHash}_${txtFileName}\"]"
+        fileDiffData="$fileDiffData,\"$file\":[\"$authorName\",\"$authorTime\",$incertions,$deletions,\"$diffPath/${numberAndHash}_${txtFileName}\"]"
     fi
     
     #does not create it in the final location as it needs to test if the file is empty (implying addition or deletion)
@@ -205,15 +205,15 @@ makeCommitFolder () {
 
     #gathers general data for later file creation
     authorName=$(git log -1 --pretty="%an" $curHash)
-    authorTime=$(git log -1 --pretty="%aI" $curHash)
-    local hashData=$(git log -1 --pretty="ѪHashѪ:Ѫ%HѪ,ѪTree_hashѪ:Ѫ%TѪ,ѪParent_hashesѪ:Ѫ%PѪ,ѪAuthor_nameѪ:Ѫ%anѪ,ѪAuthor_dateѪ:Ѫ%aIѪ,ѪCommitter_nameѪ:Ѫ%cnѪ,ѪCommitter_dateѪ:Ѫ%cdѪ,ѪSubjectѪ:Ѫ%sѪ,ѪCommit_MessageѪ:Ѫ%BѪ,ѪCommit_notesѪ:Ѫ%NѪ," $curHash | 
+    authorTime=$(git log -1 --pretty="%ad" $curHash)
+    local hashData=$(git log -1 --pretty="ѪHashѪ:Ѫ%HѪ,ѪTree_hashѪ:Ѫ%TѪ,ѪParent_hashesѪ:Ѫ%PѪ,ѪAuthor_nameѪ:Ѫ%anѪ,ѪAuthor_dateѪ:Ѫ%adѪ,ѪCommitter_nameѪ:Ѫ%cnѪ,ѪCommitter_dateѪ:Ѫ%cdѪ,ѪSubjectѪ:Ѫ%sѪ,ѪCommit_MessageѪ:Ѫ%BѪ,ѪCommit_notesѪ:Ѫ%NѪ" $curHash | 
                                                                 sed 's/"/\\"/g' |
                                                                 tr '\t' ' ' |
                                                                 tr '\n' ' ' |
                                                                 sed 's/\\/\\\\/g' |
                                                                 tr '\r' ' ' |
                                                                 sed  's|Ѫ|"|g')
-    local hashDataCSV=$(git log -1 --pretty="Ѫ%anѪ,Ѫ%aIѪ,Ѫ%sѪ,Ѫ%BѪ" $curHash | tr '\n' ' ' | sed "s|\"|'|g" | sed 's|Ѫ|"|g')
+    local hashDataCSV=$(git log -1 --pretty="|%an|,|%ad|,|%s|,|%B|" $curHash | tr '"' "'" | tr '|' '"')
     local hashChanges="$(git diff --shortstat $prevHash..$curHash)"
     
     #creates a commit's directory
@@ -274,7 +274,7 @@ makeCommitFolder () {
         echo '{'
         echo $hashData
         echo "\"Number_of_files_changed\":$numFilesChanged," | tr -d ' '
-        echo "\"Insertions\":$insertions," | tr -d ' '
+        echo "\"Incertions\":$incertions," | tr -d ' '
         echo "\"Deletions\":$deletions," | tr -d ' '
         echo "\"Current_Hash\":\"$curHash\","
         echo "\"Compared_Hash\":\"$prevHash\","
@@ -298,8 +298,8 @@ makeCommitFolder () {
     local sampleAdded=$(echo "$filesAdded" | tr ':' '\n' | grep '.*\.java' | sed -n 1,15p | tr '\n' ' ' )
     local sampleDeleted=$(echo "$filesDeleted" | tr ':' '\n' | grep '.*\.java' | sed -n 1,15p | tr '\n' ' ' )
     { 
-        #"Count,Hash,Compared Hash,Last Release,Next Release,Author's Name,Author's Date,Subject,Files Changed,Insertions,Deletions,Sample Files,Sample Modified,Sample Added,Sample Deleted"
-        echo "$chronologicalCount,$curHash,$prevHash,$oldTag,$fullTag,$hashDataCSV,$numFilesChanged,$insertions,$deletions,\"$sampleFiles\",\"$sampleModified\",\"$sampleAdded\",\"$sampleDeleted\""
+        #"Count,Hash,Compared Hash,Last Release,Next Release,Author's Name,Author's Date,Subject,Files Changed,Incertions,Deletions,Sample Files,Sample Modified,Sample Added,Sample Deleted"
+        echo "$chronologicalCount,$curHash,$prevHash,$oldTag,$fullTag,$hashDataCSV,$numFilesChanged,$incertions,$deletions,\"$sampleFiles\",\"$sampleModified\",\"$sampleAdded\",\"$sampleDeleted\""
     }>>$spreadsheetLocation
 }
 
@@ -321,7 +321,7 @@ mkdir "checkpoints"
 checkpointLocation="$dest/checkpoints"
 spreadsheetLocation="$dest/general_data.csv"
 {
-    echo "Count,Hash,Compared Hash,Last Release,Next Release,Author's Name,Author's Date,Subject,Commit Message,Files Changed,Insertions,Deletions,Sample Files,Sample Modified,Sample Added,Sample Deleted"
+    echo "Count,Hash,Compared Hash,Last Release,Next Release,Author's Name,Author's Date,Subject,Commit Message,Files Changed,Incertions,Deletions,Sample Files,Sample Modified,Sample Added,Sample Deleted"
 }>$spreadsheetLocation
 
 
