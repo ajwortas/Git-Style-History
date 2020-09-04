@@ -32,6 +32,20 @@ makeCheckpoint () {
     cd $currentPos
 }
 
+jsonFormating () {
+    jsonFormatted=$1
+        jsonFormatted=${jsonFormatted//\\/\\\\} # \ 
+        jsonFormatted=${jsonFormatted//\//\\\/} # / 
+        jsonFormatted=${jsonFormatted//\'/\\\\\'} # ' 
+        jsonFormatted=${jsonFormatted//\"/\\\"} # " 
+        jsonFormatted=${jsonFormatted//   /\\t} # \t (tab)
+        jsonFormatted=${jsonFormatted//
+/\\\n} # \n (newline)
+        jsonFormatted=${jsonFormatted//^M/\\\r} # \r (carriage return)
+        jsonFormatted=${jsonFormatted//^L/\\\f} # \f (form feed)
+        jsonFormatted=${jsonFormatted//^H/\\\b} # \b (backspace)
+}
+
 #To keep the history in order this formats the chronological count to add leading 0s (currently set to 6 digits of length)
 countFormating () {
     formattedCount="$chronologicalCount"
@@ -73,19 +87,17 @@ parseStatsData () {
     numFilesChanged="$(echo $hashChanges | sed 's/file.*//g')" 
 }
 
-#TODO get diff data:
-# git diff <oldhash>..<current hash> -- <file name>
-# git diff --shortstat <oldhash>..<current hash> -- <file name>
+#interacts specifically with each file
 makeFileAndPath () {
-    local currentPos=$(PWD)
-    local repo=$1
+    local numberAndHash=$1
     local copyDest=$2
     local givenHash=$3
     local holdingLoc=$4
     local file=$5
-    local previousCommit=$6
+    local isPreviousCommit=$6
     local previousCommitHash=$7
 
+    local currentPos=$(PWD)
     local fileName=$(basename $file)
     local filePath=$(dirname $file)
     
@@ -93,13 +105,13 @@ makeFileAndPath () {
 
     #mechanism to ignore copying over non-java files into the changed files path. Does however add them to
     #files added, files deleted, and files modified by checking if they exist
-    if [ ! $include_non_java_files -eq 1 ] && [[ $file != *".java"* ]]
+    if [ $include_non_java_files -eq 0 ] && [[ $file != *".java"* ]]
     then
-        local checkIfPresent="$(git show "${givenHash}:${file}"|tr '\0' ' ')" 
-        
-        if [ -z "$checkIfPresent" ]
+        local checkIfPresent='0'
+        git cat-file -e "${givenHash}:${file}" && local checkIfPresent='1' 
+        if [ "$checkIfPresent" -eq 0 ]
         then 
-            if [ $previousCommit -eq 0 ]
+            if [ $isPreviousCommit -eq 0 ]
             then
                 filesDeleted="$filesDeleted:$file"
             else
@@ -110,73 +122,48 @@ makeFileAndPath () {
         return 0 
     fi
 
+    #gets the diff and context from files
+    if [ $isPreviousCommit -eq 0 ]
+    then
+        local diffPath="$(echo $file | tr '/' '_' | sed 's/\.java//g')"
+        if [ ! -d "$fileDiffsLocation/$diffPath" ]
+        then
+            mkdir "$fileDiffsLocation/$diffPath"
+        fi
+        local txtFileName=$(echo $fileName | sed 's/java/txt/')
+        parseStatsData "$(git diff --shortstat $previousCommitHash..$givenHash -- $file)"
+        git diff $previousCommitHash..$givenHash -- $file > "$fileDiffsLocation/$diffPath/${numberAndHash}_$txtFileName"
+        fileDiffData="$fileDiffData,\"$file\":[$incertions,$deletions,\"$diffPath/${numberAndHash}_${txtFileName}\"]"
+    fi
+    
     #does not create it in the final location as it needs to test if the file is empty (implying addition or deletion)
     #and thus does not get its path created
     git show "${givenHash}:${file}">"$holdingLoc/$fileName"
-
-    #gets the diff and context from files
-    if [ $previousCommit -eq 0 ]
+    if [ ! -s "$holdingLoc/$fileName" ]
     then
-        if [ ! -d "$holdingLoc/file_diffs" ]
-        then
-            mkdir "$holdingLoc/file_diffs"
-        fi
-        parseStatsData "$(git diff --shortstat $previousCommitHash..$givenHash -- $file)"
-        local gitDiffOutput=$(git diff $previousCommitHash..$givenHash -- $file)
-        local gitDiffOutput=${gitDiffOutput//\\/\\\\} # \ 
-        local gitDiffOutput=${gitDiffOutput//\//\\\/} # / 
-        local gitDiffOutput=${gitDiffOutput//\'/\\\'} # ' 
-        local gitDiffOutput=${gitDiffOutput//\"/\\\"} # " 
-        local gitDiffOutput=${gitDiffOutput//   /\\t} # \t (tab)
-        local gitDiffOutput=${gitDiffOutput//
-/\\\n} # \n (newline)
-        local gitDiffOutput=${gitDiffOutput//^M/\\\r} # \r (carriage return)
-        local gitDiffOutput=${gitDiffOutput//^L/\\\f} # \f (form feed)
-        local gitDiffOutput=${gitDiffOutput//^H/\\\b} # \b (backspace)
-        
-        #fileDiffData="$fileDiffData,\"$file\":[$incertions,$deletions,\"$gitDiffOutput\"]"
-        local hashedFileName="$(echo "$file" | sha1sum | sed 's/ .*//').txt"
-        git diff $previousCommitHash..$givenHash -- $file > "$holdingLoc/file_diffs/$hashedFileName"
-        #fileDiffData="$fileDiffData,\"$file\":[$incertions,$deletions,\"$hashedFileName\"]"
-        fileDiffData="$fileDiffData,\"$file\":[$incertions,$deletions,\"$hashedFileName\",\"$gitDiffOutput\"]"
-    fi
-    
-    cd $holdingLoc
-
-    if [ ! -s $fileName ]
-    then
-        rm $fileName
-        if [ $previousCommit -eq 0 ]
+        rm "$holdingLoc/$fileName"
+        if [ $isPreviousCommit -eq 0 ]
         then
             filesDeleted="$filesDeleted:$file"
         else
             filesAdded="$filesAdded:$file"
         fi
         filesModified=$(echo $filesModified | sed "s|$file:\*||")
-        
         return 0
     fi
 
     #recreating the path in the commit's directory
-    cd $copyDest
-    tempIFS=$IFS
-    IFS='/'
-    for directory in $filePath
-    do
-        if [ ! -d $directory ]
-        then
-            mkdir $directory
-        fi
-        cd $directory
-    done
-    IFS=$tempIFS
+    if [ ! -d "$copyDest/$filePath" ]
+    then
+        mkdir -p "$copyDest/$filePath"
+    fi
 
     #finally moving the file to it's desired location
-    mv "$holdingLoc/$fileName" ./ 
-    
+    mv "$holdingLoc/$fileName" "$copyDest/$filePath"
     cd $currentPos
 }
 
+#interacts with the commits
 makeCommitFolder () {
     local folderDisplayCount=$1
     local version=$2
@@ -191,14 +178,12 @@ makeCommitFolder () {
     #and the hash is skipped to avoid any potential issues
     #otherwise the skip occurs if skip_ignored_file_commits is enabled in which case if no java files are present this returns
     #the old hash is kept to maintain track of non-java file changed when diff includes java files
-    if [ -z "$filesChanged" ]
+    if [ -z "$filesChanged" ] || ([ $skip_ignored_file_commits -eq 1 ] && [[ $filesChanged != *".java"* ]])
     then
-        compareHash=$commitHash
-        functionCheck=1
-        return 0
-    fi
-    if [ $skip_ignored_file_commits -eq 1 ] && [[ $filesChanged != *".java"* ]]
-    then
+        if [ -z "$filesChanged" ]
+        then
+            compareHash=$commitHash
+        fi
         functionCheck=1
         return 0
     fi
@@ -206,33 +191,24 @@ makeCommitFolder () {
     #should only trigger once on the inital accepted commit when looking through all commits between released versions
     if [ $checkpointRequired -eq 1 ]
     then 
-        makeCheckpoint "$repo" "$initialDest" "$folderDisplayCount-$simpleOldTag" "$curHash"
+        makeCheckpoint "$repo" "$checkpointLocation" "$folderDisplayCount-$simpleOldTag" "$curHash"
         checkpointRequired=0
     fi
 
     #gathers general data for later file creation
-    local hashData=`git log -1 --pretty="\"Hash\":\"%H\",%n\"Tree_hash\":\"%T\",%n\"Parent_hashes\":\"%P\",%n\"Author_name\":\"%an\",%n\"Author_date\":\"%ad\",%n\"Committer_name\":\"%cn\",%n\"Committer_date\":\"%cd\",%n\"Subject\":\"%s\",%n\"Commit_Message\":\"%B\",%n\"Commit_notes\":\"%N\"," $curHash`
+    local hashData=$(git log -1 --pretty="\"Hash\":\"%H\",%n\"Tree_hash\":\"%T\",%n\"Parent_hashes\":\"%P\",%n\"Author_name\":\"%an\",%n\"Author_date\":\"%ad\",%n\"Committer_name\":\"%cn\",%n\"Committer_date\":\"%cd\",%n\"Subject\":\"%s\",%n\"Commit_Message\":\"%B\",%n\"Commit_notes\":\"%N\"," $curHash | tr '\n' ' ' | tr '\r' ' ')
+    local hashDataCSV=$(git log -1 --pretty="|%an|,|%ad|,|%s|,|%B|" $curHash | tr '"' "'" | tr '|' '"')
     local hashChanges="$(git diff --shortstat $prevHash..$curHash)"
     
     #creates a commit's directory
-    cd $dest
     local newDir="${folderDisplayCount}-${version}-${curHash}"
-    mkdir $newDir
-    
-    local copyDest="${dest}/${newDir}"
-    cd $newDir
-
-    #non-meta data file paths and storage
-    local nonMetaData="commit_changes"
-    mkdir $nonMetaData
-    local prevHashCopyDest=''
+    local copyDest="${historyLocation}/${newDir}/commit_changes"
+    mkdir -p $copyDest
     if [ $include_compared_files -eq 1 ]
     then
-        local prevNonMetaData="prev_commit_changes"
-        mkdir $prevNonMetaData
-        local prevHashCopyDest="$copyDest/$prevNonMetaData"
+        local prevHashCopyDest="${historyLocation}/${newDir}/prev_commit_changes"
+        mkdir $prevHashCopyDest
     fi
-    local copyDest="$copyDest/$nonMetaData"
 
     #Data parsing and storage
     local fileOutput=''
@@ -242,7 +218,6 @@ makeCommitFolder () {
     else
         local fileOutput="$(echo $filesChanged | tr ' ' ':')"
     fi
-
     filesDeleted=''
     filesAdded=''
     filesModified="$fileOutput"
@@ -263,10 +238,10 @@ makeCommitFolder () {
         then
             continue
         fi 
-        makeFileAndPath $repo $copyDest $curHash "${dest}/${newDir}" $file 0 $prevHash
+        makeFileAndPath "${folderDisplayCount}-${curHash}" $copyDest $curHash "${historyLocation}/${newDir}" $file 0 $prevHash 
         if [ $include_compared_files -eq 1 ]
         then
-            makeFileAndPath $repo $prevHashCopyDest $prevHash "${dest}/${newDir}" $file 1 "n/a"
+            makeFileAndPath "${folderDisplayCount}-${curHash}" $prevHashCopyDest $prevHash "${historyLocation}/${newDir}" $file 1 "n/a"
         fi  
     done 
 
@@ -279,7 +254,6 @@ makeCommitFolder () {
     filesModified=$(echo "$filesModified" | sed 's|^:\+||' | sed 's|:\+$||')
 
     #creating metadata files
-    cd "${dest}/${newDir}"
     {
         echo '{'
         echo $hashData
@@ -300,7 +274,17 @@ makeCommitFolder () {
         echo "\"Deleted_Files\":[\"$(echo "$filesDeleted" | sed 's/:/","/g')\"],"
         echo "\"File_Diff_Data\":{$fileDiffData}"
         echo '}'
-    }>"${newDir}_gitCommitData.json"
+    }>"${jsonLocation}/${newDir}_gitCommitData.json"
+
+    #first 15 java files (sample)
+    local sampleFiles=$(echo "$fileOutput" | tr ':' '\n' | grep '.*\.java' | sed -n 1,15p | tr '\n' ' ' )
+    local sampleModified=$(echo "$filesModified" | tr ':' '\n' | grep '.*\.java' | sed -n 1,15p | tr '\n' ' ' )
+    local sampleAdded=$(echo "$filesAdded" | tr ':' '\n' | grep '.*\.java' | sed -n 1,15p | tr '\n' ' ' )
+    local sampleDeleted=$(echo "$filesDeleted" | tr ':' '\n' | grep '.*\.java' | sed -n 1,15p | tr '\n' ' ' )
+    { 
+        #"Count,Hash,Compared Hash,Last Release,Next Release,Author's Name,Author's Date,Subject,Files Changed,Incertions,Deletions,Sample Files,Sample Modified,Sample Added,Sample Deleted"
+        echo "$chronologicalCount,$curHash,$prevHash,$oldTag,$fullTag,$hashDataCSV,$numFilesChanged,$incertions,$deletions,\"$sampleFiles\",\"$sampleModified\",\"$sampleAdded\",\"$sampleDeleted\""
+    }>>$spreadsheetLocation
 }
 
 #NON FUNCTION CODE STARTS HERE
@@ -321,8 +305,17 @@ hashList="$(<$release_hashes)"
 #creates a history folder to store the commit histories
 cd $dest
 mkdir "history"
-initialDest=$dest
-dest="$dest/history"
+historyLocation="$dest/history"
+mkdir "metadata"
+jsonLocation="$dest/metadata"
+mkdir "fileDiffs"
+fileDiffsLocation="$dest/fileDiffs"
+mkdir "checkpoints"
+checkpointLocation="$dest/checkpoints"
+{
+    echo "Count,Hash,Compared Hash,Last Release,Next Release,Author's Name,Author's Date,Subject,Commit Message,Files Changed,Incertions,Deletions,Sample Files,Sample Modified,Sample Added,Sample Deleted"
+}>general_data.csv
+spreadsheetLocation="$dest/general_data.csv"
 
 #arrays used to determine branching
 declare -a prevHash
@@ -347,12 +340,15 @@ do
     let prevHashIndex=$majorVersion
     while [ -z ${prevHash[$prevHashIndex]} ]
     do
+        newMajorVersion=1
         let prevHashIndex--
     done
+
     compareHash=${prevHash[$prevHashIndex]}
     prevHash[$majorVersion]=$gitHash
 
-    #Duplicate Hashes are sometimes an issue
+    #Duplicate Hashes are sometimes an issue as they can get tagged differently, sorting based on time puts them together
+    #as they were released at the same time
     if [ $gitHash == $compareHash ]
     then
         continue
@@ -372,8 +368,8 @@ do
 
     #check for checkpoint criteria
     #Three core criteria:  1) if the user imputted iteration number is reached (looks for next minor version release)
-    #                      2) if there is a major version update (logically a subset of 3rd criteria)
-    #                      3) if the major versions switch (i.e. #2 or support for an older version)
+    #                      2) if there is a major version update 
+    #                      3) if the major version downgrades switch (i.e. 1.x --> 0.x)
     #Checkpoints must be present in the history. Therefore, to ensure it's checkpointing the propper commit this task is done
     #later after determining if a hash will be in history. 
     checkpointRequired=0
@@ -388,7 +384,7 @@ do
             cpNextMinorVersion=1
         fi
     fi
-    if [ ! $majorVersion -eq $lastChronologicalMajorVersion ] || [ $chronologicalCount -eq 0 ]
+    if [ $majorVersion -lt $lastChronologicalMajorVersion ] || [ $chronologicalCount -eq 0 ] || [ $newMajorVersion -eq 1 ]
     then
         checkpointDeterminerCount=0
         checkpointRequired=1
@@ -428,6 +424,7 @@ do
             fi
         done
     else
+        commitHash=$gitHash
         countFormating
         makeCommitFolder "$formattedCount" "$simpleTag" "$gitHash" "$compareHash"
         let chronologicalCount++
