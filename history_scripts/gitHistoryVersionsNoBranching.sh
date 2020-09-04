@@ -215,7 +215,7 @@ makeCommitFolder () {
     #gathers general data for later file creation
     authorName=$(git log -1 --pretty="%an" $curHash)
     authorTime=$(git log -1 --pretty="%aI" $curHash)
-    local hashData=$(git log -1 --pretty="ѪHashѪ:Ѫ%HѪ,ѪTree_hashѪ:Ѫ%TѪ,ѪParent_hashesѪ:Ѫ%PѪ,ѪAuthor_nameѪ:Ѫ%anѪ,ѪAuthor_dateѪ:Ѫ%aIѪ,ѪCommitter_nameѪ:Ѫ%cnѪ,ѪCommitter_dateѪ:Ѫ%cdѪ,ѪSubjectѪ:Ѫ%sѪ,ѪCommit_MessageѪ:Ѫ%BѪ,ѪCommit_notesѪ:Ѫ%NѪ," $curHash | 
+    local hashData=$(git log -1 --pretty="ѪHashѪ:Ѫ%HѪ,ѪTree_hashѪ:Ѫ%TѪ,ѪParent_hashesѪ:Ѫ%PѪ,ѪAuthor_nameѪ:Ѫ%anѪ,ѪAuthor_dateѪ:Ѫ%aIѪ,ѪCommitter_nameѪ:Ѫ%cnѪ,ѪCommitter_dateѪ:Ѫ%cdѪ,ѪSubjectѪ:Ѫ%sѪ,ѪCommit_MessageѪ:Ѫ%BѪ,ѪCommit_notesѪ:Ѫ%NѪ" $curHash | 
                                                                 sed 's/"/\\"/g' |
                                                                 tr '\t' ' ' |
                                                                 tr '\n' ' ' |
@@ -300,7 +300,6 @@ makeCommitFolder () {
         echo "\"Deletions\":$deletions," | tr -d ' '
         echo "\"Current_Hash\":\"$curHash\","
         echo "\"Compared_Hash\":\"$prevHash\","
-        echo "\"Is_Merge_Commit\":$isMergeCommit,\"Has_Merge_Conflict\":$hasMergeConflict,"
         echo "\"Last_Released_Version\":\"$oldTag\","
         echo "\"Next_Released_Version\":\"$fullTag\","
         echo "\"Tag_history\":[[\"$(echo ${tagLog[$majorVersion]} | sed 's/,/","/g' | sed 's/:/"],["/g')\"]],"
@@ -353,12 +352,7 @@ mergeDataLocation="$dest/mergeData.txt"
 
 
 #arrays used to determine branching
-declare -a prevHash
-declare -a tagLog
-declare -a prevReleaseHash
-prevHash[0]=$oldest
-prevReleaseHash[0]=$oldest
-tagLog[0]="0.0.0,$oldest"
+prevHash=$oldest
 
 let chronologicalCount=0
 
@@ -367,20 +361,7 @@ do
     #returns to the repo to collect the needed git data
     cd $repo
     
-    #deals with the tag tree structure
-    fullTag="$(git describe --tags $gitHash)"
-    simpleTag="$(echo "$fullTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')"
-    let majorVersion="$(echo $simpleTag | sed 's/\..*//')"
-    let prevHashIndex=$majorVersion
-    while [ -z ${prevHash[$prevHashIndex]} ]
-    do
-        newMajorVersion=1
-        let prevHashIndex--
-    done
-
-    compareHash=${prevHash[$prevHashIndex]}
-    releaseCompareHash=${prevReleaseHash[$prevHashIndex]}
-    prevReleaseHash[$majorVersion]=$gitHash
+    compareHash=$prevHash
 
     #Duplicate Hashes are sometimes an issue as they can get tagged differently, sorting based on time puts them together
     #as they were released at the same time
@@ -429,6 +410,12 @@ do
             if [[ "$mergeCommits" == *$commitHash* ]]
             then
                 isMergeCommit=1
+                {
+                    echo ""
+                    echo "Merge Hash: $commitHash"
+                    echo "Count: $formattedCount"
+                    echo "Commits in branch: $(git log --reverse $commitHash^1..$commitHash^2 | tr '\n' ' ')"
+                }>>$mergeDataLocation
             else
                 isMergeCommit=0
             fi
@@ -439,15 +426,6 @@ do
             #(i.e. no changes between no commit or potentially only non-java changes)
             if [ $functionCheck -eq 0 ]
             then
-                if [ $isMergeCommit -eq 1 ]
-                then
-                    {
-                    echo ""
-                    echo "Merge Hash: $commitHash"
-                    echo "Count: $formattedCount"
-                    echo "Commits in branch: $(git log --reverse --pretty="%H" $commitHash^1..$commitHash^2 | tr '\n' ' ')"
-                    }>>$mergeDataLocation
-                fi
                 compareHash=$commitHash
                 let chronologicalCount++
             fi
