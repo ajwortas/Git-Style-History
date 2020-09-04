@@ -348,6 +348,26 @@ makeCommitFolder () {
     }>>$spreadsheetLocation
 }
 
+mergeCommitHandler() {
+    local mergeCommitHash=$1
+    local version=$2
+    local sidebranchHashes="$(git log --pretty="%H" $mergeCommitHash^1..$mergeCommitHash^2)"
+
+    for sideHash in $sidebranchHashes
+    do
+        local sideParentHash="$(git log --pretty="%P" $sideHash)"
+        if [[ "$sideParentHash" == * * ]]
+        then
+            mergeCommitHandler $sideHash
+        else
+            makeCommitFolder $count $version $sideHash $sideParentHash
+            let count++
+        fi
+    done    
+
+
+}
+
 #NON FUNCTION CODE STARTS HERE
 
 cd $repo
@@ -370,6 +390,7 @@ mkdir "conflicts"
 conflictLocation="$dest/conflicts"
 spreadsheetLocation="$dest/general_data.csv"
 mergeDataLocation="$dest/mergeData.txt"
+
 {
     echo "Lists all Merges and Commits in the Merge"
 }>$mergeDataLocation
@@ -393,7 +414,7 @@ do
     #returns to the repo to collect the needed git data
     cd $repo
     
-    #deals with the tag tree structure
+    #deals with the tag versioning tree structure
     fullTag="$(git describe --tags $gitHash)"
     simpleTag="$(echo "$fullTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')"
     let majorVersion="$(echo $simpleTag | sed 's/\..*//')"
