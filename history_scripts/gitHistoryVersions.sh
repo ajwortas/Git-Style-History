@@ -11,6 +11,15 @@ include_non_java_files=$7
 include_compared_files=$8
 include_commits_between_versions=$9
 
+#needed global variables for methods and data transfer
+formattedCount=''
+functionCheck=''
+
+#for data parsing:
+additions=''
+deletions=''
+numFilesChanged=''
+
 #method for creating checkpoints
 makeCheckpoint () {
     local currentPos=$(PWD)
@@ -223,11 +232,6 @@ makeCommitFolder () {
     {
         echo $fileOutput | tr ':' '\n'
     }>"${newDir}_filesChanged.txt"
-#    {
-#        echo "Files_Changed,$numFilesChanged" | tr -d ' '
-#        echo "Incertions,$incertions" | tr -d ' '
-#        echo "Deletions,$deletions" | tr -d ' '
-#    }>"${newDir}_fileChangeDetails.csv"
     {
         echo '{'
         echo $hashData
@@ -252,114 +256,109 @@ makeCommitFolder () {
     }>"${newDir}_tagLog.csv"
 }
 
+main () {
 
-#gathers needed info then makes initial checkpoints
-cd $repo
-hashList="$(git log --all --reverse --no-merges --pretty=format:'%H')"
-oldest="$(echo $hashList | sed 's/ .*//')"
-newest="$(echo $hashList | sed 's/.* //g')"
-hashList="$(<$release_hashes)"
-
-#makeCheckpoint "$repo" "$dest" "Initial" "$oldest"
-#makeCheckpoint "$repo" "$dest" "Latest" "$newest"
-
-#creates a history folder to store the commit histories
-cd $dest
-mkdir "history"
-initialDest=$dest
-dest="$dest/history"
-
-#arrays for branching
-declare -a prevHash
-prevHash[0]=$oldest
-declare -a tagLog
-tagLog[0]="Initial commit,$oldest"
-
-let checkpointCount=0
-let count=0
-let cpNextMinorVersion=0
-
-for gitHash in $hashList
-do
-    #returns to the repo to collect the needed git data
+    #gathers needed info then makes initial checkpoints
     cd $repo
-    
-    #deals with the tag tree structure
-    fullTag="$(git describe --tags $gitHash)"
-    simpleTag="$(echo "$fullTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')"
-    let majorVersion="$(echo $simpleTag | sed 's/\..*//')"
-    let prevHashIndex=$majorVersion
-    while [ -z ${prevHash[$prevHashIndex]} ]
+    hashList="$(git log --all --reverse --no-merges --pretty=format:'%H')"
+    oldest="$(echo $hashList | sed 's/ .*//')"
+    newest="$(echo $hashList | sed 's/.* //g')"
+    hashList="$(<$release_hashes)"
+
+    #makeCheckpoint "$repo" "$dest" "Initial" "$oldest"
+    #makeCheckpoint "$repo" "$dest" "Latest" "$newest"
+
+    #creates a history folder to store the commit histories
+    cd $dest
+    mkdir "history"
+    initialDest=$dest
+    dest="$dest/history"
+
+    #arrays for branching
+    declare -a prevHash
+    prevHash[0]=$oldest
+    declare -a tagLog
+    tagLog[0]="Initial commit,$oldest"
+
+    let checkpointCount=0
+    let count=0
+    let cpNextMinorVersion=0
+
+    for gitHash in $hashList
     do
-        let prevHashIndex--
-    done
-    compareHash=${prevHash[$prevHashIndex]}
-    prevHash[$majorVersion]=$gitHash
-
-    filesChanged="$(git diff --name-only $compareHash..$gitHash)"
-
-    #allows for the option to ignore versions not containing java files or are duplicates
-    if ([ $skip_ignored_file_commits -eq 1 ] && [[ $filesChanged != *".java"* ]] && [ $include_commits_between_versions -eq 0 ] ) || [ $gitHash == $compareHash ]
-    then
-        continue
-    fi
-   
-    tagLog[$majorVersion]="${tagLog[$prevHashIndex]}:$fullTag,$gitHash"
-
-    #check for checkpoint criteria
-    checkpointRequired=0
-    let checkForCheckpoint=$checkpointCount%$checkpoint_iterations
-    if ([ $checkForCheckpoint -eq 0 ] && [ ! $checkpoint_iterations -eq 0 ]) || [ ! $majorVersion -eq $prevHashIndex ] || [ $cpNextMinorVersion -eq 1 ] || [ ! $prevHashIndex -eq $majorVersion ]
-    then
-        if [[ $simpleTag =~ .*[0-9]+\.[0-9]+\.0 ]]
-        then
-            
-            cpNextMinorVersion=0
-        else
-            cpNextMinorVersion=1
-        fi
-    fi
+        #returns to the repo to collect the needed git data
+        cd $repo
     
-    #building the history path(s)
-    if [ $include_commits_between_versions -eq 1 ]
-    then
-        #accquires the old tag if we're including the old commit files
-        oldTag=''
-        simpleOldTag=''
-        if [ $count -eq 0 ]
-        then
-            oldTag=$oldest
-            simpleOldTag="0.0.0"
-        else
-            oldTag="$(git describe --tags $compareHash)"
-            simpleOldTag=$(echo "$oldTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')
-        fi
-        
-        #finding the commits between the current version and the previous version
-        intraVersionCommits="$(git log --reverse --pretty="%H" $compareHash..$gitHash)"
-
-        for commitHash in $intraVersionCommits
+        #deals with the tag tree structure
+        fullTag="$(git describe --tags $gitHash)"
+        simpleTag="$(echo "$fullTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')"
+        let majorVersion="$(echo $simpleTag | sed 's/\..*//')"
+        let prevHashIndex=$majorVersion
+        while [ -z ${prevHash[$prevHashIndex]} ]
         do
-            functionCheck=0
-            countFormating
-            makeCommitFolder "$formattedCount" "$simpleOldTag" "$commitHash" "$compareHash"
-            compareHash=$commitHash
-            if [ $functionCheck -eq 0 ]
-            then
-                let count++
-#                let countTest=$count%1000
-#                if [ $countTest -eq 0 ]
-#                then
-#                    $cpNextMinorVersion=1
-#                fi
-            fi
+            let prevHashIndex--
         done
-    else
-        countFormating
-        makeCommitFolder "$formattedCount" "$simpleTag" "$gitHash" "$compareHash"
-        let count++
-    fi
-    let checkpointCount++
-done
+        compareHash=${prevHash[$prevHashIndex]}
+        prevHash[$majorVersion]=$gitHash
 
-echo "done"
+        filesChanged="$(git diff --name-only $compareHash..$gitHash)"
+
+        #allows for the option to ignore versions not containing java files or are duplicates
+        if ([ $skip_ignored_file_commits -eq 1 ] && [[ $filesChanged != *".java"* ]] && [ $include_commits_between_versions -eq 0 ] ) || [ $gitHash == $compareHash ]
+        then
+            continue
+        fi
+   
+        tagLog[$majorVersion]="${tagLog[$prevHashIndex]}:$fullTag,$gitHash"
+
+        #check for checkpoint criteria
+        checkpointRequired=0
+        let checkForCheckpoint=$checkpointCount%$checkpoint_iterations
+        if ([ $checkForCheckpoint -eq 0 ] && [ ! $checkpoint_iterations -eq 0 ]) || [ ! $majorVersion -eq $prevHashIndex ] || [ $cpNextMinorVersion -eq 1 ] || [ ! $prevHashIndex -eq $majorVersion ]
+        then
+            if [[ $simpleTag =~ .*[0-9]+\.[0-9]+\.0 ]]
+            then
+                cpNextMinorVersion=0
+            else
+                cpNextMinorVersion=1
+            fi
+        fi
+    
+        #building the history path(s)
+        if [ $include_commits_between_versions -eq 1 ]
+        then
+            #accquires the old tag if we're including the old commit files
+            oldTag=''
+            simpleOldTag=''
+            if [ $count -eq 0 ]
+            then
+                oldTag=$oldest
+                simpleOldTag="0.0.0"
+            else
+                oldTag="$(git describe --tags $compareHash)"
+                simpleOldTag=$(echo "$oldTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')
+            fi
+        
+            #finding the commits between the current version and the previous version
+            intraVersionCommits="$(git log --reverse --pretty="%H" $compareHash..$gitHash)"
+
+            for commitHash in $intraVersionCommits
+            do
+                functionCheck=0
+                countFormating
+                makeCommitFolder "$formattedCount" "$simpleOldTag" "$commitHash" "$compareHash"
+                compareHash=$commitHash
+                if [ $functionCheck -eq 0 ]
+                then
+                    let count++
+                fi
+            done
+        else
+            countFormating
+            makeCommitFolder "$formattedCount" "$simpleTag" "$gitHash" "$compareHash"
+            let count++
+        fi
+        let checkpointCount++
+    done
+}
+
