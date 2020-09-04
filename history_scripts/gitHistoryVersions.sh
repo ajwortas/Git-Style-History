@@ -97,6 +97,10 @@ parseStatsData () {
 }
 
 #interacts specifically with each file
+#codes for isPreviousCommit
+# [0] = is the current commit the program is on
+# [1] = is the compared commit to the current
+# [2] = is a branched path that caused merge errors
 makeFileAndPath () {
     local numberAndHash=$1
     local copyDest=$2
@@ -160,7 +164,7 @@ makeFileAndPath () {
         if [ $isPreviousCommit -eq 0 ]
         then
             filesDeleted="$filesDeleted:$file"
-        else
+        elif [ $isPreviousCommit -eq 1 ]
             filesAdded="$filesAdded:$file"
         fi
         filesModified=$(echo $filesModified | sed "s|$file:\*||")
@@ -203,14 +207,25 @@ makeCommitFolder () {
         return 0
     fi
 
-    #test to see if there is a merge conflict. In the diff between the share ancestor of the two parents of the merge commit should be the same.
-    #unless work is done in the merge commit which we can speculate that there was a merge error and work (further diffs) were needed to resolve it. 
-    if [ $isMergeCommit -eq 1 ] && [ "$(git diff -U0 $curHash^1...$curHash^2)" != "$(git diff -U0 $curHash^1...$curHash)" ]
+    local numTestFiles=$(echo "$filesChanged" | grep "*test*" | wc -l)
+    local numMergeTestFiles=0
+    local hasMergeConflict=0
+    local altBranchNumCommits=0
+   
+    if [ $isMergeCommit -eq 1 ]
     then
-        hasMergeConflict=1
-    else
-        hasMergeConflict=0
+        #test to see if there is a merge conflict. In the diff between the share ancestor of the two parents of the merge commit should be the same.
+        #unless work is done in the merge commit which we can speculate that there was a merge error and work (further diffs) were needed to resolve it. 
+        if [ "$(git diff -U0 $curHash^1...$curHash^2)" != "$(git diff -U0 $curHash^1...$curHash)" ] 
+        then
+            local hasMergeConflict=1
+        fi 
+        local altPathFiles=$(git diff --name-only $curHash^1...$curHash^2)
+        local numMergeTestFiles=$(echo "$altPathFiles" | grep "test" | wc -l)
+        local altBranchNumCommits=$(git log --pretty="%H" $commitHash^1..$commitHash^2 | wc -l)
     fi
+
+   
 
     #gathers general data for later file creation
     authorName=$(git log -1 --pretty="%an" $curHash)
@@ -273,13 +288,20 @@ makeCommitFolder () {
     #for use when there has been a merge error.
     if [ $hasMergeConflict -eq 1 ]
     then
-        local altPathFiles=$(git diff --name-only $curHash^1...$curHash^2)
+       
         local parentHash=$(git log -1 --pretty="%H" $curHash^2)
         local altBranchDest="${historyLocation}/${newDir}/alt_commit_changes"
         mkdir $altBranchDest
+        local altConflictBranchDest="${historyLocation}/${newDir}/alt_conflict_commit_changes"
+        mkdir $altConflictBranchDest
+
         for file in $altPathFiles
         do
-            makeFileAndPath "${folderDisplayCount}-${curHash}" $altBranchDest $parentHash "${historyLocation}/${newDir}" $file 1 "n/a"
+            if [ "$(git diff -U0 $curHash^1...$curHash^2 -- $file)" != "$(git diff -U0 $curHash^1...$curHash -- $file)" ]
+            then
+                makeFileAndPath "${folderDisplayCount}-${curHash}" $altConflictBranchDest $parentHash "${historyLocation}/${newDir}" $file 2 "n/a"
+            fi
+            makeFileAndPath "${folderDisplayCount}-${curHash}" $altBranchDest $parentHash "${historyLocation}/${newDir}" $file 2 "n/a"
         done
     fi
 
@@ -300,7 +322,7 @@ makeCommitFolder () {
         echo "\"Deletions\":$deletions," | tr -d ' '
         echo "\"Current_Hash\":\"$curHash\","
         echo "\"Compared_Hash\":\"$prevHash\","
-        echo "\"Is_Merge_Commit\":$isMergeCommit,\"Has_Merge_Conflict\":$hasMergeConflict,"
+        echo "\"Is_Merge_Commit\":$isMergeCommit,\"Has_Merge_Conflict\":$hasMergeConflict,\"Num_test_files\":$numTestFiles,\"Num_merge_test_files\":$numMergeTestFiles,"
         echo "\"Last_Released_Version\":\"$oldTag\","
         echo "\"Next_Released_Version\":\"$fullTag\","
         echo "\"Tag_history\":[[\"$(echo ${tagLog[$majorVersion]} | sed 's/,/","/g' | sed 's/:/"],["/g')\"]],"
@@ -322,15 +344,17 @@ makeCommitFolder () {
     local sampleDeleted=$(echo "$filesDeleted" | tr ':' '\n' | grep '.*\.java' | sed -n 1,15p | tr '\n' ' ' )
     { 
         #"Count,Hash,Compared Hash,Last Release,Next Release,Author's Name,Author's Date,Subject,Files Changed,Insertions,Deletions,Sample Files,Sample Modified,Sample Added,Sample Deleted"
-        echo "$chronologicalCount,$curHash,$prevHash,$oldTag,$fullTag,$hashDataCSV,$isMergeCommit,$hasMergeConflict,$numFilesChanged,$insertions,$deletions,\"$sampleFiles\",\"$sampleModified\",\"$sampleAdded\",\"$sampleDeleted\""
+        echo "$chronologicalCount,$curHash,$prevHash,$oldTag,$fullTag,$hashDataCSV,$isMergeCommit,$hasMergeConflict,$numFilesChanged,$insertions,$deletions,$numTestFiles,$numMergeTestFiles\"$sampleFiles\",\"$sampleModified\",\"$sampleAdded\",\"$sampleDeleted\""
     }>>$spreadsheetLocation
 }
 
 #NON FUNCTION CODE STARTS HERE
+
 cd $repo
-hashList="$(git log --all --reverse --no-merges --pretty=format:'%H')"
-oldest="$(echo $hashList | sed 's/ .*//')"
+nullCommit=$(git hash-object -t tree /dev/null)
 hashList="$(<$release_hashes)"
+oldest="$(git log --reverse --pretty="%H" $(echo "$hashList" | sed -n 1p) | sed -n 1p)"
+
 
 #creates a history folder to store the commit histories
 cd $dest
@@ -342,13 +366,15 @@ mkdir "fileDiffs"
 fileDiffsLocation="$dest/fileDiffs"
 mkdir "checkpoints"
 checkpointLocation="$dest/checkpoints"
+mkdir "conflicts"
+conflictLocation="$dest/conflicts"
 spreadsheetLocation="$dest/general_data.csv"
 mergeDataLocation="$dest/mergeData.txt"
 {
     echo "Lists all Merges and Commits in the Merge"
 }>$mergeDataLocation
 {
-    echo "Count,Hash,Compared Hash,Last Release,Next Release,Author's Name,Author's Date,Author's Date Short,Subject,Commit Message,Merge Commit,Merge Conflict,Files Changed,Insertions,Deletions,Sample Files,Sample Modified,Sample Added,Sample Deleted"
+    echo "Count,Hash,Compared Hash,Last Release,Next Release,Author's Name,Author's Date,Author's Date Short,Subject,Commit Message,Merge Commit,Merge Conflict,Files Changed,Insertions,Deletions,Num Test Files,Num Merge Branch Test Files,Sample Files,Sample Modified,Sample Added,Sample Deleted"
 }>$spreadsheetLocation
 
 
@@ -356,7 +382,7 @@ mergeDataLocation="$dest/mergeData.txt"
 declare -a prevHash
 declare -a tagLog
 declare -a prevReleaseHash
-prevHash[0]=$oldest
+prevHash[0]=$nullCommit
 prevReleaseHash[0]=$oldest
 tagLog[0]="0.0.0,$oldest"
 
@@ -413,14 +439,21 @@ do
             oldTag="0.0.0"
             simpleOldTag="0.0.0"
         else
-            oldTag="$(git describe --tags $compareHash)"
+            oldTag="$(git describe --tags $releaseCompareHash)"
             simpleOldTag=$(echo "$oldTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')
         fi
         
         #finding the commits between the current version and the previous version
-        intraVersionCommits="$(git log --reverse --first-parent --pretty="%H" $compareHash..$gitHash)"
-        mergeCommits="$(git log --reverse --merges --pretty=format:'%H' $compareHash..$gitHash)"
-        
+
+        if [[ $count -eq 0 ]]
+        then
+            intraVersionCommits="$(git log --reverse --first-parent --pretty="%H" $oldest..$gitHash)"
+            mergeCommits="$(git log --reverse --merges --pretty=format:'%H' $oldest..$gitHash)"
+        else
+            intraVersionCommits="$(git log --reverse --first-parent --pretty="%H" $compareHash..$gitHash)"
+            mergeCommits="$(git log --reverse --merges --pretty=format:'%H' $compareHash..$gitHash)"
+        fi
+
         for commitHash in $intraVersionCommits
         do
             functionCheck=0
@@ -441,6 +474,7 @@ do
             then
                 if [ $isMergeCommit -eq 1 ]
                 then
+                    
                     {
                     echo ""
                     echo "Merge Hash: $commitHash"
