@@ -3,20 +3,25 @@
 #full file path for repo and dest, 0 to disable 1 to enable the rest, any number above 0 for iterations
 repo=$1
 dest=$2
-release_hashes=$3
+release_hashes=$3 #enter blank to skip
 checkpoint_iterations=$4
 hide_non_java_from_change_list=$5
 skip_ignored_file_commits=$6
 include_non_java_files=$7
 include_compared_files=$8
-include_commits_between_versions=$9
 
-let history_count_length=6
+#important global variables
+readonly history_count_length=6
+let chronologicalCount=0
+nullCommit=$(git hash-object -t tree /dev/null)
+compareHash="$nullCommit"
+formattedCount=''
+
 
 #method for creating checkpoints
 makeCheckpoints () {
     #check for checkpoint criteria
-    #Three core criteria:  1) if the user imputted iteration number is reached (looks for next minor version release)
+    #Three core criteria:  1) if the user inputted iteration number is reached (looks for next minor version release)
     #                      2) if there is a major version update 
     #                      3) if the major version downgrades switch (i.e. 1.x --> 0.x)
     #Checkpoints must be present in the history. Therefore, to ensure it's checkpointing the propper commit this task is done
@@ -353,30 +358,103 @@ mergeCommitHandler() {
     local version=$2
     local sidebranchHashes="$(git log --pretty="%H" $mergeCommitHash^1..$mergeCommitHash^2)"
 
-    for sideHash in $sidebranchHashes
-    do
-        local sideParentHash="$(git log --pretty="%P" $sideHash)"
-        if [[ "$sideParentHash" == * * ]]
-        then
-            mergeCommitHandler $sideHash
-        else
-            makeCommitFolder $count $version $sideHash $sideParentHash
-            let count++
-        fi
-    done    
 
 
 }
 
+hashRangeHandler(){
+    local firstHash=$1
+    local secondHash=$2
+    local tagData=$3
+    local commitHash
+    local commitHashList="$(git log --reverse --first-parent --pretty="%H" $firstHash..$secondHash)"
+
+    #finding the commits between the current version and the previous version
+    for commitHash in $commitHashList
+    do
+        functionCheck=0
+        countFormating
+        if [[ "$(git log --pretty="%P" $commitHash)" == * * ]]
+        then
+            isMergeCommit=1
+            mergeCommitHandler $commitHash $tagData
+        else
+            isMergeCommit=0
+        fi
+        makeCommitFolder "$formattedCount" "$tagData" "$commitHash" "$compareHash"
+        #Function check should be equal to one after makeCommitFolder is called if commit is faulty 
+        #(i.e. no changes between commits or potentially only non-java changes)
+        if [ $functionCheck -eq 0 ]
+        then
+            compareHash=$commitHash
+            let chronologicalCount++
+        fi
+    done
+}
+
+releaseVersionHandler(){
+    local versionHashList=$1
+
+    oldest="$(git log --reverse --pretty="%H" $(echo "$versionHashList" | sed -n 1p) | sed -n 1p)"
+    #arrays used to determine branching
+    declare -a prevHash
+    declare -a tagLog
+    declare -a prevReleaseHash
+    prevHash[0]=$nullCommit
+    prevReleaseHash[0]=$oldest
+    tagLog[0]="0.0.0,$oldest"
+
+    for gitHash in $versionHashList
+    do
+        #returns to the repo to collect the needed git data
+        cd $repo
+    
+        #deals with the tag versioning tree structure
+        fullTag="$(git describe --tags $gitHash)"
+        simpleTag="$(echo "$fullTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')"
+        let majorVersion="$(echo $simpleTag | sed 's/\..*//')"
+        let prevHashIndex=$majorVersion
+        while [ -z ${prevHash[$prevHashIndex]} ]
+        do
+            newMajorVersion=1
+            let prevHashIndex--
+        done
+
+        compareHash=${prevHash[$prevHashIndex]}
+        releaseCompareHash=${prevReleaseHash[$prevHashIndex]}
+        prevReleaseHash[$majorVersion]=$gitHash
+
+        #Duplicate Hashes are sometimes an issue as they can get tagged differently, sorting based on time puts them together
+        #as they were released at the same time
+        if [ $gitHash == $releaseCompareHash ]
+        then
+            continue
+        fi
+    
+        tagLog[$majorVersion]="${tagLog[$prevHashIndex]}:$fullTag,$gitHash"
+        
+        oldTag=''
+        simpleOldTag=''
+        if [ $chronologicalCount -eq 0 ]
+        then
+            oldTag="0.0.0"
+            simpleOldTag="0.0.0"
+        else
+            oldTag="$(git describe --tags $releaseCompareHash)"
+            simpleOldTag=$(echo "$oldTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')
+        fi
+
+        if [[ $chronologicalCount -eq 0 ]]; then
+            hashRangeHandler $oldest $gitHash $simpleOldTag
+        else
+            hashRangeHandler $compareHash $gitHash $simpleOldTag
+        fi
+        prevHash[$majorVersion]=$compareHash
+    done
+}
+
 #NON FUNCTION CODE STARTS HERE
-
-cd $repo
-nullCommit=$(git hash-object -t tree /dev/null)
-hashList="$(<$release_hashes)"
-oldest="$(git log --reverse --pretty="%H" $(echo "$hashList" | sed -n 1p) | sed -n 1p)"
-
-
-#creates a history folder to store the commit histories
+#creates general folder structure
 cd $dest
 mkdir "history"
 historyLocation="$dest/history"
@@ -388,136 +466,24 @@ mkdir "checkpoints"
 checkpointLocation="$dest/checkpoints"
 mkdir "conflicts"
 conflictLocation="$dest/conflicts"
-spreadsheetLocation="$dest/general_data.csv"
-mergeDataLocation="$dest/mergeData.txt"
 
-{
-    echo "Lists all Merges and Commits in the Merge"
-}>$mergeDataLocation
+#logging files
+spreadsheetLocation="$dest/general_data.csv"
 {
     echo "Count,Hash,Compared Hash,Last Release,Next Release,Author's Name,Author's Date,Author's Date Short,Subject,Commit Message,Merge Commit,Merge Conflict,Files Changed,Insertions,Deletions,Num Test Files,Num Merge Branch Test Files,Sample Files,Sample Modified,Sample Added,Sample Deleted"
 }>$spreadsheetLocation
 
+cd $repo
 
-#arrays used to determine branching
-declare -a prevHash
-declare -a tagLog
-declare -a prevReleaseHash
-prevHash[0]=$nullCommit
-prevReleaseHash[0]=$oldest
-tagLog[0]="0.0.0,$oldest"
+#making sure the latest commit is the head
+#git checkout $(echo $(git log -1 --all --pretty="%H"))
 
-let chronologicalCount=0
-
-for gitHash in $hashList
-do
-    #returns to the repo to collect the needed git data
-    cd $repo
-    
-    #deals with the tag versioning tree structure
-    fullTag="$(git describe --tags $gitHash)"
-    simpleTag="$(echo "$fullTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')"
-    let majorVersion="$(echo $simpleTag | sed 's/\..*//')"
-    let prevHashIndex=$majorVersion
-    while [ -z ${prevHash[$prevHashIndex]} ]
-    do
-        newMajorVersion=1
-        let prevHashIndex--
-    done
-
-    compareHash=${prevHash[$prevHashIndex]}
-    releaseCompareHash=${prevReleaseHash[$prevHashIndex]}
-    prevReleaseHash[$majorVersion]=$gitHash
-
-    #Duplicate Hashes are sometimes an issue as they can get tagged differently, sorting based on time puts them together
-    #as they were released at the same time
-    if [ $gitHash == $releaseCompareHash ]
-    then
-        continue
-    fi
-
-    #Used when just comparing released versions, determines if given version meets criteria to proceed
-    if [ $include_commits_between_versions -eq 0 ]
-    then
-        filesChanged="$(git diff --name-only $compareHash..$gitHash)"
-        if [ $skip_ignored_file_commits -eq 1 ] && [[ $filesChanged != *".java"* ]]
-        then
-            continue
-        fi
-    fi
-   
-    tagLog[$majorVersion]="${tagLog[$prevHashIndex]}:$fullTag,$gitHash"
-    
-    #Determines how to proceed to build history. If looking at all commits and not just releases it gathers tag
-    #data from last released version. Tag hashes used in place of actual Tags to avoid issues with releases
-    #being improperly tagged
-    if [ $include_commits_between_versions -eq 1 ]
-    then
-        oldTag=''
-        simpleOldTag=''
-        if [ $chronologicalCount -eq 0 ]
-        then
-            oldTag="0.0.0"
-            simpleOldTag="0.0.0"
-        else
-            oldTag="$(git describe --tags $releaseCompareHash)"
-            simpleOldTag=$(echo "$oldTag"| grep -o -E '[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+')
-        fi
-        
-        #finding the commits between the current version and the previous version
-
-        if [[ $count -eq 0 ]]
-        then
-            intraVersionCommits="$(git log --reverse --first-parent --pretty="%H" $oldest..$gitHash)"
-            mergeCommits="$(git log --reverse --merges --pretty=format:'%H' $oldest..$gitHash)"
-        else
-            intraVersionCommits="$(git log --reverse --first-parent --pretty="%H" $compareHash..$gitHash)"
-            mergeCommits="$(git log --reverse --merges --pretty=format:'%H' $compareHash..$gitHash)"
-        fi
-
-        for commitHash in $intraVersionCommits
-        do
-            functionCheck=0
-            countFormating
-    
-            if [[ "$mergeCommits" == *$commitHash* ]]
-            then
-                isMergeCommit=1
-            else
-                isMergeCommit=0
-            fi
-            
-            makeCommitFolder "$formattedCount" "$simpleOldTag" "$commitHash" "$compareHash"
-
-            #Function check should be equal to one after makeCommitFolder is called if commit is faulty 
-            #(i.e. no changes between no commit or potentially only non-java changes)
-            if [ $functionCheck -eq 0 ]
-            then
-                if [ $isMergeCommit -eq 1 ]
-                then
-                    
-                    {
-                    echo ""
-                    echo "Merge Hash: $commitHash"
-                    echo "Count: $formattedCount"
-                    echo "Commits in branch: $(git log --reverse --pretty="%H" $commitHash^1..$commitHash^2 | tr '\n' ' ')"
-                    }>>$mergeDataLocation
-                fi
-                compareHash=$commitHash
-                let chronologicalCount++
-            fi
-        done
-        prevHash[$majorVersion]=$compareHash
-    
-    #only used when looking just at releases
-    else
-        commitHash=$gitHash
-        countFormating
-        makeCommitFolder "$formattedCount" "$simpleTag" "$gitHash" "$compareHash"
-        let chronologicalCount++
-    fi
-done
+if [ -z "$release_hashes" ]
+then
+    hashRangeHandler "$(git log  --all --reverse --pretty="%H"|sed -n 1p)" "$(git log --all -1 --pretty="%H")"
+else
+    releaseVersionHandler "$(<$release_hashes)"
+fi
 
 makeCheckpoints
-
 echo "done"
